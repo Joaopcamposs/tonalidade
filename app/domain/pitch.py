@@ -3,6 +3,7 @@
 Usa librosa e scipy, então só o worker importa este módulo.
 """
 
+from collections.abc import Callable
 from pathlib import Path
 
 import librosa
@@ -20,12 +21,45 @@ SAMPLE_RATE = 22050
 MIN_FRAMES = 100  # a nota mais aguda precisa aparecer em pelo menos ~2,3 s no total
 RANKING_SIZE = 8
 MAX_TIMES = 5
+CHUNK = 30 * SAMPLE_RATE // HOP * HOP  # bloco da análise (~30 s), múltiplo do HOP
+OVERLAP = 2 * SAMPLE_RATE // HOP * HOP  # sobra de cada lado, descartada, para as bordas
 MIN_RUN_FRAMES = 10  # trechos menores que isso (~0,23 s) não contam como ocorrência
 RUN_GAP_SECONDS = 1.0  # quadros separados por menos que isso formam o mesmo trecho
 
 
-def _melody(y_harmonic: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Nota MIDI por quadro e a confiança dela, por soma harmônica sobre a CQT."""
+def _harmonic(y: np.ndarray) -> np.ndarray:
+    """Parte harmônica do áudio (tira a percussão), calculada em blocos para limitar a memória.
+
+    O HPSS da música inteira passa de 1 GB de pico; os filtros de mediana são locais, então cada
+    bloco leva uma sobra de cada lado que é descartada e o resultado praticamente não muda.
+    """
+    out = np.empty_like(y)
+    for start in range(0, len(y), CHUNK):
+        end = min(start + CHUNK, len(y))
+        left = max(0, start - OVERLAP)
+        harmonic = librosa.effects.harmonic(y[left : end + OVERLAP], margin=3.0)
+        out[start:end] = harmonic[start - left : end - left]
+    return out
+
+
+def _by_frames(y: np.ndarray, compute: Callable[[np.ndarray], np.ndarray]) -> np.ndarray:
+    """Aplica `compute` (quadros no último eixo) em blocos de `y` e costura os quadros.
+
+    Mesma ideia do `_harmonic`: cada bloco leva uma sobra que é descartada. Os blocos começam em
+    múltiplos de HOP, então os quadros de cada um caem nos mesmos instantes de uma passada única.
+    """
+    parts: list[np.ndarray] = []
+    for start in range(0, len(y), CHUNK):
+        end = min(start + CHUNK, len(y))
+        left = max(0, start - OVERLAP)
+        frames = compute(y[left : end + OVERLAP])
+        stop = frames.shape[-1] if end == len(y) else (end - left) // HOP
+        parts.append(frames[..., (start - left) // HOP : stop])
+    return np.concatenate(parts, axis=-1)
+
+
+def _melody(y_harmonic: np.ndarray) -> np.ndarray:
+    """Nota MIDI e confiança por quadro (linhas 0 e 1), por soma harmônica sobre a CQT."""
     fmin = librosa.note_to_hz("C2")
     cqt = np.abs(
         librosa.cqt(
@@ -49,7 +83,7 @@ def _melody(y_harmonic: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
                 salience[k] += w * cqt[bb]
 
     midi = librosa.hz_to_midi(fmin * 2 ** ((salience.argmax(axis=0) + low) / BINS_PER_OCTAVE))
-    return medfilt(midi, 9), salience.max(axis=0)
+    return np.stack([medfilt(midi, 9), salience.max(axis=0)])
 
 
 def _runs(frames: np.ndarray) -> list[float]:
@@ -115,9 +149,12 @@ def _chords_at(
 def analyze_audio(path: Path) -> AudioFeatures:
     """Analisa o arquivo e devolve a nota mais aguda sustentada, o ranking e o chroma por janela."""
     y, _ = librosa.load(path, sr=SAMPLE_RATE, mono=True)
-    y_harmonic, _ = librosa.effects.hpss(y, margin=3.0)  # mantém o harmônico, tira a percussão
-    midi, confidence = _melody(y_harmonic)
-    chroma = librosa.feature.chroma_cqt(y=y_harmonic, sr=SAMPLE_RATE, hop_length=HOP)
+    y_harmonic = _harmonic(y)
+    midi, confidence = _by_frames(y_harmonic, _melody)
+    chroma = _by_frames(
+        y_harmonic,
+        lambda chunk: librosa.feature.chroma_cqt(y=chunk, sr=SAMPLE_RATE, hop_length=HOP),
+    )
 
     strong = confidence > np.percentile(confidence, 60)
     rounded = np.round(midi).astype(int)

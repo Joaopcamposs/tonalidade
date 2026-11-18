@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import librosa
 import numpy as np
 import pytest
 import soundfile as sf
@@ -7,7 +8,16 @@ import soundfile as sf
 from app.domain.errors import NoMelodyError
 from app.domain.features import ALGO_VERSION
 from app.domain.key import KeySection
-from app.domain.pitch import HOP, SAMPLE_RATE, _chords_at, analyze_audio, rank_notes
+from app.domain.pitch import (
+    HOP,
+    SAMPLE_RATE,
+    _by_frames,
+    _chords_at,
+    _harmonic,
+    _melody,
+    analyze_audio,
+    rank_notes,
+)
 
 
 def test_top_note_is_highest_sustained(make_wav):
@@ -92,3 +102,12 @@ def test_peak_uses_key_of_its_own_section():
     chroma[4], chroma[11], chroma[7], chroma[8] = 1.0, 1.0, 0.5, 0.48  # quase empate E / Em
     sections = [KeySection(0.0, 0, "maior", 1.0), KeySection(30.0, 4, "maior", 1.0)]
     assert _chords_at(chroma, [5.0, 35.0], sections) == ["Em", "E"]
+
+
+def test_chunked_analysis_matches_single_pass(make_wav):
+    """Em blocos (áudio maior que um bloco) o resultado é o mesmo da passada única."""
+    y, _ = librosa.load(make_wav([(67, 25), (71, 25), (62, 25)]), sr=SAMPLE_RATE)  # 75 s: 3 blocos
+    whole, _ = librosa.effects.hpss(y, margin=3.0)
+    harmonic = _harmonic(y)
+    assert np.allclose(harmonic, whole, atol=1e-4)
+    assert np.array_equal(_by_frames(harmonic, _melody)[0], _melody(harmonic)[0])
