@@ -14,7 +14,9 @@ from app.domain.pitch import (
     _by_frames,
     _chords_at,
     _harmonic,
+    _load,
     _melody,
+    _tuning,
     analyze_audio,
     rank_notes,
 )
@@ -106,8 +108,16 @@ def test_peak_uses_key_of_its_own_section():
 
 def test_chunked_analysis_matches_single_pass(make_wav):
     """Em blocos (áudio maior que um bloco) o resultado é o mesmo da passada única."""
-    y, _ = librosa.load(make_wav([(67, 25), (71, 25), (62, 25)]), sr=SAMPLE_RATE)  # 75 s: 3 blocos
+    path = make_wav([(67, 12), (71, 12), (62, 12)])  # 36 s: vários blocos de 5 s
+    y = _load(path)
+    expected, _ = librosa.load(path, sr=SAMPLE_RATE)
+    assert np.allclose(y[: len(expected)], expected[: len(y)], atol=1e-5)
     whole, _ = librosa.effects.hpss(y, margin=3.0)
     harmonic = _harmonic(y)
     assert np.allclose(harmonic, whole, atol=1e-4)
-    assert np.array_equal(_by_frames(harmonic, _melody)[0], _melody(harmonic)[0])
+    tuning = _tuning(harmonic)
+    assert tuning == pytest.approx(
+        librosa.estimate_tuning(y=harmonic, sr=SAMPLE_RATE, bins_per_octave=36)
+    )
+    chunked = _by_frames(harmonic, lambda chunk: _melody(chunk, tuning))
+    assert np.array_equal(chunked[0], _melody(harmonic, tuning)[0])

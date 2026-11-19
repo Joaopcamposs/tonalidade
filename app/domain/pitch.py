@@ -8,6 +8,8 @@ from pathlib import Path
 
 import librosa
 import numpy as np
+import soundfile as sf
+import soxr
 from scipy.signal import medfilt
 
 from app.domain.chords import AFTER_SECONDS, BEFORE_SECONDS, WINDOW_SECONDS, moment_chord
@@ -21,10 +23,23 @@ SAMPLE_RATE = 22050
 MIN_FRAMES = 100  # a nota mais aguda precisa aparecer em pelo menos ~2,3 s no total
 RANKING_SIZE = 8
 MAX_TIMES = 5
-CHUNK = 30 * SAMPLE_RATE // HOP * HOP  # bloco da análise (~30 s), múltiplo do HOP
+CHUNK = 5 * SAMPLE_RATE // HOP * HOP  # bloco da análise (~5 s), múltiplo do HOP
 OVERLAP = 2 * SAMPLE_RATE // HOP * HOP  # sobra de cada lado, descartada, para as bordas
 MIN_RUN_FRAMES = 10  # trechos menores que isso (~0,23 s) não contam como ocorrência
 RUN_GAP_SECONDS = 1.0  # quadros separados por menos que isso formam o mesmo trecho
+
+
+def _load(path: Path) -> np.ndarray:
+    """Lê o áudio como mono em SAMPLE_RATE, em pedaços de 10 s, sem carregar o arquivo inteiro.
+
+    Ler e reamostrar o arquivo todo de uma vez (`librosa.load`) tem um pico de ~350 MB.
+    """
+    with sf.SoundFile(path) as file:
+        resampler = soxr.ResampleStream(file.samplerate, SAMPLE_RATE, 1, dtype="float32")
+        blocks = file.blocks(file.samplerate * 10, dtype="float32", always_2d=True)
+        parts = [resampler.resample_chunk(block.mean(axis=1)) for block in blocks]
+        parts.append(resampler.resample_chunk(np.empty(0, dtype=np.float32), last=True))
+    return np.concatenate(parts)
 
 
 def _harmonic(y: np.ndarray) -> np.ndarray:
@@ -58,7 +73,31 @@ def _by_frames(y: np.ndarray, compute: Callable[[np.ndarray], np.ndarray]) -> np
     return np.concatenate(parts, axis=-1)
 
 
-def _melody(y_harmonic: np.ndarray) -> np.ndarray:
+def _tuning(y: np.ndarray) -> float:
+    """Afinação da música inteira, como `librosa.estimate_tuning(y=y)`, mas calculada em blocos.
+
+    Sem isso, cada bloco estimaria a sua e a CQT mudaria de um bloco para o outro.
+    """
+    pitches: list[np.ndarray] = []
+    magnitudes: list[np.ndarray] = []
+    for start in range(0, len(y), CHUNK):
+        end = min(start + CHUNK, len(y))
+        left = max(0, start - OVERLAP)
+        pitch, magnitude = librosa.piptrack(y=y[left : end + OVERLAP], sr=SAMPLE_RATE)
+        stop = pitch.shape[1] if end == len(y) else (end - left) // HOP
+        pitch, magnitude = (
+            pitch[:, (start - left) // HOP : stop],
+            magnitude[:, (start - left) // HOP : stop],
+        )
+        voiced = pitch > 0
+        pitches.append(pitch[voiced])
+        magnitudes.append(magnitude[voiced])
+    pitch, magnitude = np.concatenate(pitches), np.concatenate(magnitudes)
+    threshold = np.median(magnitude) if pitch.size else 0.0
+    return librosa.pitch_tuning(pitch[magnitude >= threshold], bins_per_octave=BINS_PER_OCTAVE)
+
+
+def _melody(y_harmonic: np.ndarray, tuning: float) -> np.ndarray:
     """Nota MIDI e confiança por quadro (linhas 0 e 1), por soma harmônica sobre a CQT."""
     fmin = librosa.note_to_hz("C2")
     cqt = np.abs(
@@ -69,6 +108,7 @@ def _melody(y_harmonic: np.ndarray) -> np.ndarray:
             fmin=fmin,
             n_bins=BINS_PER_OCTAVE * 6,
             bins_per_octave=BINS_PER_OCTAVE,
+            tuning=tuning,
         )
     )
     cqt = librosa.util.normalize(cqt, axis=0, norm=np.inf)
@@ -148,13 +188,18 @@ def _chords_at(
 
 def analyze_audio(path: Path) -> AudioFeatures:
     """Analisa o arquivo e devolve a nota mais aguda sustentada, o ranking e o chroma por janela."""
-    y, _ = librosa.load(path, sr=SAMPLE_RATE, mono=True)
+    y = _load(path)
     y_harmonic = _harmonic(y)
-    midi, confidence = _by_frames(y_harmonic, _melody)
+    del y
+    tuning = _tuning(y_harmonic)
+    midi, confidence = _by_frames(y_harmonic, lambda chunk: _melody(chunk, tuning))
     chroma = _by_frames(
         y_harmonic,
-        lambda chunk: librosa.feature.chroma_cqt(y=chunk, sr=SAMPLE_RATE, hop_length=HOP),
+        lambda chunk: librosa.feature.chroma_cqt(
+            y=chunk, sr=SAMPLE_RATE, hop_length=HOP, tuning=tuning
+        ),
     )
+    del y_harmonic
 
     strong = confidence > np.percentile(confidence, 60)
     rounded = np.round(midi).astype(int)
