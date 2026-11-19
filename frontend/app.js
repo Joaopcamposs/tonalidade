@@ -8,6 +8,7 @@ const CONFIRM_MS = 4000;
 const FETCH_ATTEMPTS = 3;
 const SLOW_MS = 5 * 60 * 1000;
 const EXTRACT_KEY = "extractNow";
+const QUEUED_TEXT = "Na fila: a música será extraída em seguida e aparece na lista quando ficar pronta.";
 const BACKGROUND_TEXT = "Pedido recebido: a música está sendo processada em segundo plano. Quando ficar pronta, ela aparece na lista de músicas analisadas.";
 const SLOW_TEXT = "Está demorando: o worker pode estar desligado.";
 const EXTRACT_LABEL = {
@@ -608,20 +609,36 @@ async function openFromHistory(videoId) {
   }
 }
 
+let extracting = 0; // pedidos de extração na hora ainda abertos; o botão segue livre para empilhar
+
+// Mostra, sem apagar o que está aberto, que a música foi para a fila ou segue em segundo plano.
+function showQueued() {
+  noticeBox.textContent = extractNow.checked ? QUEUED_TEXT : BACKGROUND_TEXT;
+  noticeBox.hidden = false;
+  urlInput.value = "";
+}
+
 async function analyze(event) {
   event.preventDefault();
-  activeRun++; // interrompe o acompanhamento de qualquer música anterior
   errorBox.hidden = true;
   noticeBox.hidden = true;
-  reportBox.hidden = true;
-  submit.disabled = true;
-  statusBox.textContent = extractNow.checked ? "Extraindo a música (até 120 s)..." : "Enviando...";
-  statusBox.hidden = false;
+  const immediate = extractNow.checked;
+  if (immediate) {
+    extracting++;
+    statusBox.textContent = "Extraindo a música (até 120 s)...";
+    statusBox.hidden = false;
+  } else {
+    activeRun++; // interrompe o acompanhamento de qualquer música anterior
+    reportBox.hidden = true;
+    submit.disabled = true;
+    statusBox.textContent = "Enviando...";
+    statusBox.hidden = false;
+  }
   try {
     const response = await api("/api/analyses", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: urlInput.value, extract_now: extractNow.checked }),
+      body: JSON.stringify({ url: urlInput.value, extract_now: immediate }),
     });
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
@@ -632,21 +649,31 @@ async function analyze(event) {
       noticeBox.textContent = `Você já analisou esta música em ${dateText(created.analyzed_at)}.`;
       noticeBox.hidden = false;
     }
-    if (!created.already_analyzed && !extractNow.checked) {
-      // Enviado ao worker (202): não espera; a lista se atualiza quando ficar pronto.
-      statusBox.hidden = true;
-      noticeBox.textContent = BACKGROUND_TEXT;
-      noticeBox.hidden = false;
-      urlInput.value = "";
-    } else {
+    if (created.already_analyzed) {
       await loadReport(created.video_id);
+    } else if (immediate && (await isDone(created.video_id))) {
+      await loadReport(created.video_id);
+    } else {
+      showQueued(); // na fila da API ou entregue ao worker: não espera, a lista se atualiza
     }
     await refreshHistory();
   } catch (error) {
     showError(error.message);
   } finally {
-    submit.disabled = false;
+    if (immediate) {
+      extracting--;
+      if (extracting === 0 && statusBox.textContent.startsWith("Extraindo")) statusBox.hidden = true;
+    } else {
+      statusBox.hidden = true;
+      submit.disabled = false;
+    }
   }
+}
+
+// Consulta uma vez se a análise já terminou (sem esperar nem mexer na tela).
+async function isDone(videoId) {
+  const response = await fetchWithRetry(`/api/analyses/${videoId}`);
+  return response.ok && (await response.json()).status === "done";
 }
 
 // Salva o teto no servidor e refaz o relatório aberto com as features que ele já tem.

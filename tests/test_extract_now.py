@@ -80,3 +80,45 @@ async def test_slow_download_returns_to_pending_and_worker_finishes(client, pipe
     assert await worker.process_next() is True
     assert await _saved()
     assert calls == [VIDEO_ID, VIDEO_ID]
+
+
+OTHER_ID = "9bZkp7q19f0"
+OTHER_URL = f"https://www.youtube.com/watch?v={OTHER_ID}"
+
+
+async def _post_during_extraction(client, delay):
+    """Segundo pedido enquanto o primeiro extrai; devolve (tarefa do primeiro, tempo do segundo)."""
+    delay["first"] = 0.5
+    first = asyncio.create_task(
+        client.post("/api/analyses", json={"url": URL, "extract_now": True})
+    )
+    await asyncio.sleep(0.2)
+    started = time.monotonic()
+    response = await client.post("/api/analyses", json={"url": OTHER_URL, "extract_now": True})
+    assert response.status_code == 202
+    return first, time.monotonic() - started
+
+
+async def test_request_during_extraction_is_queued_and_extracted_next(client, pipeline):
+    calls, delay = pipeline
+    first, waited = await _post_during_extraction(client, delay)
+    assert waited < 0.3  # entrou na fila e voltou, sem esperar a extração em curso
+    assert calls == [VIDEO_ID]
+    await first
+    assert calls == [VIDEO_ID, OTHER_ID]
+    async with store.session() as session:
+        assert await store.find(session, OTHER_ID) is not None
+        assert await jobs.get(session, OTHER_ID) is None
+
+
+async def test_queue_beyond_the_budget_is_left_pending_for_the_worker(
+    client, pipeline, monkeypatch
+):
+    calls, delay = pipeline
+    monkeypatch.setattr(worker, "DRAIN_BUDGET_SECONDS", 0)
+    first, _ = await _post_during_extraction(client, delay)
+    await first
+    assert calls == [VIDEO_ID]
+    async with store.session() as session:
+        assert await jobs.get(session, OTHER_ID) == jobs.Progress("pending")
+    assert not worker._api_queue and not worker._api_busy

@@ -50,7 +50,8 @@ def list_ceilings() -> CeilingsOut:
         "analisado (por qualquer pessoa), responde 200 com `already_analyzed` e a data, sem "
         "baixar de novo; senão responde 202 e enfileira para o worker. "
         "Com `extract_now`, a API tenta extrair antes de responder, por até 120 s (pelo proxy "
-        "`PROXY_*`, se configurado) e, se não der, o job fica na fila para o worker. "
+        "`PROXY_*`, se configurado) e, se não der, o job fica na fila para o worker. Se a API já "
+        "está extraindo outra música, o pedido entra na fila dela e responde 202 na hora. "
         "Responde 429 se a pessoa passou do limite de novos pedidos por hora."
     ),
 )

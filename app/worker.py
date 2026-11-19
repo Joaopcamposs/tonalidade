@@ -1,8 +1,10 @@
 """Worker: processa os jobs pendentes do banco (baixa o áudio, analisa e grava o resultado).
 
 Uso: `python -m app.worker`. Rode um único worker por banco. A API também pode extrair um job
-na hora (`extract_in_api`, pedido com `extract_now`), em até `EXTRACT_TIMEOUT_SECONDS`, pelo
-proxy de `PROXY_*` se houver; se falhar ou estourar o prazo, o worker assume.
+na hora (`extract_in_api`, pedido com `extract_now`), em até `EXTRACT_TIMEOUT_SECONDS` cada, pelo
+proxy de `PROXY_*` se houver; se falhar ou estourar o prazo, o worker assume. A API extrai uma
+música por vez: pedidos que chegam durante uma extração entram numa fila em memória, e o pedido
+que está extraindo segue para o próximo enquanto houver tempo (`DRAIN_BUDGET_SECONDS`).
 """
 
 import asyncio
@@ -11,6 +13,8 @@ import logging
 import os
 import signal
 import tempfile
+import time
+from collections import deque
 from pathlib import Path
 
 from sqlalchemy import delete
@@ -26,6 +30,10 @@ from app.services.store import Job
 logger = logging.getLogger(__name__)
 
 EXTRACT_TIMEOUT_SECONDS = 120  # prazo de toda a extração (download + análise) feita pela API
+DRAIN_BUDGET_SECONDS = 240  # tempo total que um pedido segura a instância viva extraindo a fila
+
+_api_queue: deque[str] = deque()  # músicas esperando a vez na API; a fonte da verdade é o banco
+_api_busy = False  # há um pedido extraindo (só um por vez: a instância não comporta duas análises)
 
 
 async def _finish(video_id: str) -> None:
@@ -130,11 +138,8 @@ async def process_next() -> bool:
     return True
 
 
-async def extract_in_api(video_id: str) -> None:
-    """Extrai o job na própria API (pedido com `extract_now`), com prazo de 120 s.
-
-    Usa o proxy `PROXY_*` se configurado, senão sai direto. Não faz nada se o worker já o pegou.
-    """
+async def _extract_one(video_id: str) -> None:
+    """Reivindica e extrai um job na API; não faz nada se o worker já o pegou."""
     async with store.session() as session:
         claimed = await jobs.claim(session, video_id)
     if claimed is None:
@@ -142,6 +147,31 @@ async def extract_in_api(video_id: str) -> None:
     proxy = proxy_url()
     logger.info("Extraindo %s na API %s", video_id, "pelo proxy" if proxy else "direto")
     await run(video_id, proxy, in_api=True, timeout=EXTRACT_TIMEOUT_SECONDS)
+
+
+async def extract_in_api(video_id: str) -> None:
+    """Extrai o job na própria API (pedido com `extract_now`), um de cada vez.
+
+    Se já há um pedido extraindo, só entra na fila em memória e volta na hora: quem está extraindo
+    pega a música quando terminar a atual. O pedido que extrai segura a instância viva e só volta
+    quando a fila esvazia ou quando não cabe mais uma extração em `DRAIN_BUDGET_SECONDS`; o que
+    sobrar segue `pending` no banco para o worker. Usa o proxy `PROXY_*` se configurado.
+    """
+    global _api_busy
+    if _api_busy:
+        _api_queue.append(video_id)
+        return
+    _api_busy = True
+    started = time.monotonic()
+    try:
+        await _extract_one(video_id)
+        while _api_queue:
+            if DRAIN_BUDGET_SECONDS - (time.monotonic() - started) < EXTRACT_TIMEOUT_SECONDS:
+                break
+            await _extract_one(_api_queue.popleft())
+    finally:
+        _api_queue.clear()
+        _api_busy = False
 
 
 async def recover_orphans() -> None:

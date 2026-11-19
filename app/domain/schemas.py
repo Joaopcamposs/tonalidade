@@ -64,7 +64,8 @@ class AnalysisRequest(BaseModel):
         description=(
             "False (padrão): só enfileira para o worker. True: a própria API tenta extrair "
             "antes de responder, por até 120 s (pelo proxy `PROXY_*`, se configurado); se não "
-            "terminar, o job volta à fila para o worker."
+            "terminar, o job volta à fila para o worker. Com outra extração em curso, só espera a "
+            "vez numa fila da API."
         ),
     )
 
