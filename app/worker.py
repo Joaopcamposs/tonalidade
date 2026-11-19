@@ -25,7 +25,7 @@ from app.services.store import Job
 
 logger = logging.getLogger(__name__)
 
-EXTRACT_TIMEOUT_SECONDS = 60  # prazo de toda a extração (download + análise) feita pela API
+EXTRACT_TIMEOUT_SECONDS = 120  # prazo de toda a extração (download + análise) feita pela API
 
 
 async def _finish(video_id: str) -> None:
@@ -131,7 +131,7 @@ async def process_next() -> bool:
 
 
 async def extract_in_api(video_id: str) -> None:
-    """Extrai o job na própria API (pedido com `extract_now`), com prazo de 60 s.
+    """Extrai o job na própria API (pedido com `extract_now`), com prazo de 120 s.
 
     Usa o proxy `PROXY_*` se configurado, senão sai direto. Não faz nada se o worker já o pegou.
     """

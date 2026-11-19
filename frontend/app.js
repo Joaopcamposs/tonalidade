@@ -11,7 +11,7 @@ const EXTRACT_KEY = "extractNow";
 const BACKGROUND_TEXT = "Pedido recebido: a música está sendo processada em segundo plano. Quando ficar pronta, ela aparece na lista de músicas analisadas.";
 const SLOW_TEXT = "Está demorando: o worker pode estar desligado.";
 const EXTRACT_LABEL = {
-  true: "Extrair agora (até 60 s; se não der, vai para o worker)",
+  true: "Extrair agora (até 120 s; se não der, vai para o worker)",
   false: "Enviar para o worker (processa em segundo plano)",
 };
 const STATUS_TEXT = {
@@ -615,7 +615,7 @@ async function analyze(event) {
   noticeBox.hidden = true;
   reportBox.hidden = true;
   submit.disabled = true;
-  statusBox.textContent = extractNow.checked ? "Extraindo a música (até 60 s)..." : "Enviando...";
+  statusBox.textContent = extractNow.checked ? "Extraindo a música (até 120 s)..." : "Enviando...";
   statusBox.hidden = false;
   try {
     const response = await api("/api/analyses", {

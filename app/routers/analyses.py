@@ -49,7 +49,7 @@ def list_ceilings() -> CeilingsOut:
         "Recebe o link do YouTube e põe a música na lista da pessoa. Se o vídeo já foi "
         "analisado (por qualquer pessoa), responde 200 com `already_analyzed` e a data, sem "
         "baixar de novo; senão responde 202 e enfileira para o worker. "
-        "Com `extract_now`, a API tenta extrair antes de responder, por até 60 s (pelo proxy "
+        "Com `extract_now`, a API tenta extrair antes de responder, por até 120 s (pelo proxy "
         "`PROXY_*`, se configurado) e, se não der, o job fica na fila para o worker. "
         "Responde 429 se a pessoa passou do limite de novos pedidos por hora."
     ),

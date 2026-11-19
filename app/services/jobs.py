@@ -12,8 +12,8 @@ from app.services.store import Job, JobStatus, UserAnalysis
 
 MAX_JOBS = 50
 # Job em curso sem sinal há tanto tempo foi abandonado (ex.: a API caiu). Fica logo acima do prazo
-# de 60 s do extract_now, para não retomar uma extração ainda viva.
-STALE_SECONDS = 61
+# de 120 s do extract_now, para não retomar uma extração ainda viva.
+STALE_SECONDS = 121
 
 
 @dataclass
