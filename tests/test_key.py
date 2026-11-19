@@ -26,7 +26,7 @@ def _window_in(tonic_pc: int) -> list[float]:
     return _chroma_for({(tonic_pc + step) % 12: weight for step, weight in _E_MAJOR_STEPS.items()})
 
 
-_E_MAJOR_STEPS = {0: 1.0, 2: 0.5, 4: 0.8, 5: 0.3, 7: 0.9, 9: 0.5, 11: 0.5}
+_E_MAJOR_STEPS = {0: 1.0, 2: 0.5, 4: 0.8, 5: 0.3, 7: 0.9, 9: 0.5, 11: 0.9}
 
 
 def test_modulation_gives_two_sections():
@@ -94,3 +94,21 @@ def test_excursion_that_returns_is_not_a_modulation():
 def test_long_stay_in_another_key_that_returns_is_still_a_modulation():
     windows = [_window_in(7)] * 5 + [_window_in(2)] * 4 + [_window_in(7)] * 5
     assert [s.tonic_pc for s in key_sections(windows)] == [7, 2, 7]
+
+
+def _chord_window(chord: tuple[int, int, int]) -> list[float]:
+    """Janela de uma música em Sol menor: o acorde em destaque, as outras notas da escala fracas."""
+    scale = {7, 9, 10, 0, 2, 3, 5}  # G A A# C D D# F (G menor natural = A# maior)
+    profile = {pc: 0.35 for pc in scale}
+    profile.update(dict(zip(chord, (1.0, 0.8, 0.9), strict=True)))
+    return _chroma_for(profile)
+
+
+def test_diatonic_chord_changes_are_not_modulations():
+    # Gm, A#, F e Dm usam as mesmas sete notas: o destaque de cada acorde muda o tom local,
+    # mas a música não modula, e o tom é o da música inteira (Sol menor, com a dominante D forte).
+    gm, bb, f, dm = (7, 10, 2), (10, 2, 5), (5, 9, 0), (2, 5, 9)
+    windows = [_chord_window(c) for c in (dm, dm, f, f, bb, bb, bb, gm, gm, dm, dm, f, bb)]
+    sections = key_sections(windows)
+    assert len(sections) == 1
+    assert sections[0].start == 0.0

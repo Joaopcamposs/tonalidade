@@ -15,6 +15,9 @@ MIN_SCORE = 0.5  # janela com correlação menor que isso (silêncio, ruído) n�
 MIN_SECTION_WINDOWS = 2  # trecho menor que isso é empréstimo de acorde, não modulação
 MAX_EXCURSION_WINDOWS = 2  # trecho assim de curto que volta ao tom anterior é ênfase, não modulação
 DOMINANT_MARGIN = 0.15  # dominante do relativo precisa ser 15% mais forte para ele vencer o empate
+MODULATION_WINDOWS = 3  # a nota nova precisa se sustentar por tantas janelas seguidas (30 s)
+MIN_SCALE_NOTE = 0.3  # toda nota da escala precisa ter 30% da média das notas da escala
+MAX_OUTSIDE_NOTE = 0.9  # nota fora da escala até 90% da média da escala é só acorde em destaque
 MAX_RELATIVE_GAP = 0.2  # o relativo só vira alternativa se ficar a no máximo isso do tom escolhido
 
 
@@ -79,7 +82,11 @@ class _Run:
 
 
 def _section(
-    start: float, key: KeyCandidate, score: float, profiles: list[np.ndarray]
+    start: float,
+    key: KeyCandidate,
+    score: float,
+    profiles: list[np.ndarray],
+    margin: float = DOMINANT_MARGIN,
 ) -> KeySection:
     """Monta o trecho; guarda o relativo se, nas mesmas janelas, ele ficar perto do tom."""
     tonic_pc, mode = _relative(key)
@@ -87,12 +94,53 @@ def _section(
     if score - relative_score > MAX_RELATIVE_GAP:
         return KeySection(start, key.tonic_pc, key.mode, score)
     mean = np.mean(profiles, axis=0)  # empate: vence o tom cuja dominante (quinta) soa mais forte
-    if mean[(tonic_pc + 7) % 12] > mean[(key.tonic_pc + 7) % 12] * (1 + DOMINANT_MARGIN):
+    if mean[(tonic_pc + 7) % 12] > mean[(key.tonic_pc + 7) % 12] * (1 + margin):
         chosen = KeyCandidate(key.tonic_pc, key.mode, score)
         return KeySection(start, tonic_pc, mode, relative_score, chosen)
     return KeySection(
         start, key.tonic_pc, key.mode, score, KeyCandidate(tonic_pc, mode, relative_score)
     )
+
+
+def _scale(tonic_pc: int, mode: Literal["maior", "menor"]) -> set[int]:
+    """As sete notas da escala (menor natural = a do relativo maior)."""
+    major = tonic_pc if mode == "maior" else (tonic_pc + 3) % 12
+    return {(major + step) % 12 for step in (0, 2, 4, 5, 7, 9, 11)}
+
+
+def _one_key(windows: Sequence[Sequence[float]]) -> KeySection | None:
+    """O tom da música inteira, se existe uma escala que vale para todos os trechos.
+
+    Ré menor, Fá e Si bemol usam as mesmas sete notas: o destaque de cada acorde muda o tom local,
+    mas todas as notas da escala seguem presentes e nenhuma nota nova se sustenta. Numa modulação
+    de verdade (Sol para Ré), ou a nota nova (Dó sustenido) fica forte por vários trechos seguidos,
+    ou a nota antiga (Dó) some, e nenhuma escala única serve.
+    """
+    chroma = np.asarray(windows, dtype=float)
+    spans = [
+        chroma[i : i + MODULATION_WINDOWS].mean(axis=0)
+        for i in range(max(len(chroma) - MODULATION_WINDOWS + 1, 1))
+    ]
+    fits: dict[int, float] = {}
+    for major in range(12):
+        inside = sorted(_scale(major, "maior"))
+        outside = [pc for pc in range(12) if pc not in inside]
+        weakest = min(float(span[inside].min() / span[inside].mean()) for span in spans)
+        strongest = max(float(span[outside].max() / span[inside].mean()) for span in spans)
+        if weakest >= MIN_SCALE_NOTE and strongest <= MAX_OUTSIDE_NOTE:
+            fits[major] = strongest
+    if not fits:
+        return None
+    major = min(fits, key=lambda m: fits[m])
+    mean = chroma.mean(axis=0)
+    minor = (major + 9) % 12
+    candidates = [
+        KeyCandidate(major, "maior", _score(mean, major, "maior")),
+        KeyCandidate(minor, "menor", _score(mean, minor, "menor")),
+    ]
+    best = max(candidates, key=lambda c: c.score)
+    # a música inteira tem evidência de sobra: a dominante mais forte já desempata
+    return _section(0.0, best, best.score, [mean], margin=0.0)
 
 
 def key_sections(windows: Sequence[Sequence[float]]) -> list[KeySection]:
@@ -157,4 +205,6 @@ def key_sections(windows: Sequence[Sequence[float]]) -> list[KeySection]:
     for section in sections[1:]:
         if (section.tonic_pc, section.mode) != (unique[-1].tonic_pc, unique[-1].mode):
             unique.append(section)
+    if len(unique) > 1 and (one := _one_key(windows)):
+        return [one]
     return unique
